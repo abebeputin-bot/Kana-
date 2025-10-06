@@ -4,10 +4,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # --- Configuration ---
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")  # safer for Render
 GENERAL_CONTACT = '0086465604'
 CUSTOMER_SERVICE_BOT = '@kana_foods_bot'
 
+# Product Inventory
 PRODUCTS = {
     "mozzarella_cheese": {"name": "🧀 Mozzarella Cheese", "price": 800, "unit": "per unit"},
     "provolone_cheese": {"name": "🧀 Provolone Cheese", "price": 930, "unit": "per unit"},
@@ -16,6 +17,7 @@ PRODUCTS = {
     "table_butter": {"name": "🧈 Table Butter", "price": 240, "unit": "per unit"},
 }
 
+# In-memory cart
 user_carts = {}
 
 logging.basicConfig(
@@ -23,6 +25,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Utility Functions ---
 def get_product_list_keyboard():
     keyboard = []
     for key, product in PRODUCTS.items():
@@ -46,6 +49,7 @@ def get_cart_summary(user_id):
     summary.append(f"\n*💰 Total Cost: {total_cost}*")
     return "\n".join(summary), total_cost
 
+# --- Command Handlers ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     welcome_text = (
@@ -94,6 +98,7 @@ async def checkout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in user_carts:
         del user_carts[user_id]
 
+# --- Callback Handler ---
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -132,7 +137,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_product_list_keyboard()
         )
     elif data == 'checkout':
-        await checkout_command(update, context)
+        await checkout_command(query, context)
     elif data == 'back_to_menu':
         await query.edit_message_text(
             "*🍽️ Kana Foods Product Catalog*\n\n"
@@ -141,6 +146,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
+# --- Main ---
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
