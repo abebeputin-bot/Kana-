@@ -1,136 +1,164 @@
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Updater, CommandHandler, CallbackQueryHandler, CallbackContext
-)
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+
+# --- Configuration ---
+TOKEN = os.getenv("BOT_TOKEN")
+GENERAL_CONTACT = '0086465604'
+CUSTOMER_SERVICE_BOT = '@kana_foods_bot'
+
+PRODUCTS = {
+    "mozzarella_cheese": {"name": "🧀 Mozzarella Cheese", "price": 800, "unit": "per unit"},
+    "provolone_cheese": {"name": "🧀 Provolone Cheese", "price": 930, "unit": "per unit"},
+    "chicken_whole": {"name": "🐔 Whole Chicken", "price": 650, "unit": "per unit"},
+    "chicken_breast": {"name": "🍗 Chicken Breast", "price": 1080, "unit": "per kg"},
+    "table_butter": {"name": "🧈 Table Butter", "price": 240, "unit": "per unit"},
+}
+
+user_carts = {}
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-TOKEN = "8422253254:AAFrac-FRl65zjZQ-T7d0B4uZ0yv90HiX2s"
-ADMIN_CHAT_ID = 5763697888
-CONTACT_NUMBER = "0086465604"
+def get_product_list_keyboard():
+    keyboard = []
+    for key, product in PRODUCTS.items():
+        button_text = f"{product['name']} - {product['price']} ({product['unit']})"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"add_{key}")])
+    keyboard.append([InlineKeyboardButton("🛒 View Cart and Checkout", callback_data='view_cart')])
+    return InlineKeyboardMarkup(keyboard)
 
-PRODUCTS = {
-    "Mozzarella Cheese": 800,
-    "Provolone Cheese": 930,
-    "Chicken": 650,
-    "Chicken Breast": 1080,
-    "Table Butter": 240
-}
+def get_cart_summary(user_id):
+    cart = user_carts.get(user_id, {})
+    if not cart:
+        return "Your cart is currently empty! Use /menu to start ordering.", 0
+    summary = ["*🛒 Your Current Order (Kana Foods)*\n"]
+    total_cost = 0
+    for key, quantity in cart.items():
+        if quantity > 0 and key in PRODUCTS:
+            product = PRODUCTS[key]
+            line_total = product['price'] * quantity
+            total_cost += line_total
+            summary.append(f"• {quantity}x {product['name']} @ {product['price']} = {line_total}")
+    summary.append(f"\n*💰 Total Cost: {total_cost}*")
+    return "\n".join(summary), total_cost
 
-CARTS = {}
-
-def start(update: Update, context: CallbackContext):
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    keyboard = [[InlineKeyboardButton(p, callback_data=f"add_{p}")]
-                for p in PRODUCTS.keys()]
-    keyboard.append([InlineKeyboardButton("🛒 View Cart", callback_data="view_cart")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    welcome_text = (
+        f"👋 Hello, {user.full_name}! Welcome to the *Kana Foods* order bot.\n\n"
+        "I can help you place bulk orders for high-quality food products.\n\n"
+        "Use /menu to see our products or /cart to view your current order."
+    )
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
-    update.message.reply_text(
-        f"👋 Welcome to *Kana Foods*, {user.first_name}!
-\n"
-        "We deliver premium dairy & poultry products straight to your kitchen.\n\n"
-        "📦 Select your product below:",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "*🍽️ Kana Foods Product Catalog*\n\n"
+        "Tap a product to add one unit to your cart. View your cart to adjust quantities.",
+        reply_markup=get_product_list_keyboard(),
+        parse_mode='Markdown'
     )
 
-def handle_button(update: Update, context: CallbackContext):
+async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    summary, _ = get_cart_summary(user_id)
+    keyboard = [
+        [InlineKeyboardButton("✅ Checkout Order", callback_data='checkout')],
+        [InlineKeyboardButton("🗑️ Clear Cart", callback_data='clear_cart')]
+    ]
+    await update.message.reply_text(
+        summary,
+        reply_markup=InlineKeyboardMarkup(keyboard) if user_carts.get(user_id) else None,
+        parse_mode='Markdown'
+    )
+
+async def checkout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    summary, _ = get_cart_summary(user_id)
+    if not user_carts.get(user_id):
+        await update.message.reply_text("Your cart is empty. Nothing to check out.")
+        return
+    order_details = summary + "\n\n"
+    order_details += (
+        "*--- Next Steps ---*\n"
+        "To finalize your order, please copy your order details above and contact us using the information below.\n\n"
+        f"**📞 General Contact:** `{GENERAL_CONTACT}`\n"
+        f"**👤 Your User ID:** `{user_id}`\n\n"
+        "*Your cart has been cleared.* Thank you for ordering with Kana Foods!"
+    )
+    await update.message.reply_text(order_details, parse_mode='Markdown')
+    if user_id in user_carts:
+        del user_carts[user_id]
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    query.answer()
+    await query.answer()
     user_id = query.from_user.id
     data = query.data
-
-    if data.startswith("add_"):
-        product = data.split("add_")[1]
-        CARTS.setdefault(user_id, {})
-        CARTS[user_id][product] = CARTS[user_id].get(product, 0) + 1
-        query.edit_message_text(
-            text=f"✅ Added *{product}* to your cart!\n\nSelect more items or view your cart.",
-            parse_mode="Markdown"
+    if data.startswith('add_'):
+        product_key = data[4:]
+        if user_id not in user_carts:
+            user_carts[user_id] = {}
+        user_carts[user_id][product_key] = user_carts[user_id].get(product_key, 0) + 1
+        product_name = PRODUCTS.get(product_key, {}).get("name", "Item")
+        await query.edit_message_caption(
+            caption=f"Added 1x {product_name}. Total in cart: {user_carts[user_id][product_key]}.",
+            reply_markup=get_product_list_keyboard()
         )
-        start(update, context)
-
-    elif data == "view_cart":
-        show_cart(update, context, user_id)
-
-def show_cart(update: Update, context: CallbackContext, user_id):
-    query = update.callback_query
-    cart = CARTS.get(user_id, {})
-    if not cart:
-        query.edit_message_text("🛒 Your cart is empty!")
-        return
-
-    message = "🛍 *Your Cart:*\n\n"
-    total = 0
-    for item, qty in cart.items():
-        price = PRODUCTS[item] * qty
-        message += f"{item} x{qty} = {price} ETB\n"
-        total += price
-    message += f"\n💰 *Total:* {total} ETB"
-
-    keyboard = [
-        [InlineKeyboardButton("✅ Place Order", callback_data="place_order")],
-        [InlineKeyboardButton("🧹 Clear Cart", callback_data="clear_cart")]
-    ]
-    query.edit_message_text(
-        text=message,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-def place_order(update: Update, context: CallbackContext):
-    query = update.callback_query
-    user = query.from_user
-    user_id = user.id
-    cart = CARTS.get(user_id, {})
-
-    if not cart:
-        query.edit_message_text("🛒 Your cart is empty!")
-        return
-
-    total = sum(PRODUCTS[item] * qty for item, qty in cart.items())
-    order_text = f"🧾 *New Order from {user.first_name}:*\n\n"
-    for item, qty in cart.items():
-        order_text += f"{item} x{qty} = {PRODUCTS[item]*qty} ETB\n"
-    order_text += f"\n💰 *Total:* {total} ETB\n📞 Contact: {CONTACT_NUMBER}"
-
-    context.bot.send_message(
-        chat_id=ADMIN_CHAT_ID,
-        text=order_text,
-        parse_mode="Markdown"
-    )
-
-    query.edit_message_text(
-        "✅ Your order has been placed successfully!\n\n"
-        "We'll contact you soon to confirm delivery.\n"
-        f"For inquiries call 📞 {CONTACT_NUMBER}"
-    )
-
-    CARTS[user_id] = {}
-
-def clear_cart(update: Update, context: CallbackContext):
-    query = update.callback_query
-    user_id = query.from_user.id
-    CARTS[user_id] = {}
-    query.edit_message_text("🧹 Your cart has been cleared.")
-    start(update, context)
+    elif data == 'view_cart':
+        summary, _ = get_cart_summary(user_id)
+        keyboard = [
+            [InlineKeyboardButton("✅ Checkout Order", callback_data='checkout')],
+            [InlineKeyboardButton("🗑️ Clear Cart", callback_data='clear_cart')],
+            [InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')]
+        ]
+        await query.edit_message_text(
+            summary,
+            reply_markup=InlineKeyboardMarkup(keyboard) if user_carts.get(user_id) else get_product_list_keyboard(),
+            parse_mode='Markdown'
+        )
+    elif data == 'clear_cart':
+        if user_id in user_carts:
+            del user_carts[user_id]
+            message = "🗑️ Your cart has been completely cleared."
+        else:
+            message = "Your cart was already empty."
+        await query.edit_message_text(
+            message + "\n\nUse /menu to start a new order.",
+            reply_markup=get_product_list_keyboard()
+        )
+    elif data == 'checkout':
+        await checkout_command(update, context)
+    elif data == 'back_to_menu':
+        await query.edit_message_text(
+            "*🍽️ Kana Foods Product Catalog*\n\n"
+            "Tap a product to add one unit to your cart. View your cart to adjust quantities.",
+            reply_markup=get_product_list_keyboard(),
+            parse_mode='Markdown'
+        )
 
 def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("menu", menu_command))
+    app.add_handler(CommandHandler("cart", cart_command))
+    app.add_handler(CommandHandler("checkout", checkout_command))
+    app.add_handler(CallbackQueryHandler(button_callback))
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CallbackQueryHandler(handle_button))
-    dp.add_handler(CallbackQueryHandler(place_order, pattern="place_order"))
-    dp.add_handler(CallbackQueryHandler(clear_cart, pattern="clear_cart"))
+    PORT = int(os.environ.get("PORT", 8443))
+    webhook_url = f"https://{os.environ['RENDER_EXTERNAL_HOSTNAME']}/{TOKEN}"
 
-    updater.start_polling()
-    updater.idle()
+    print(f"Starting webhook at {webhook_url}")
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=webhook_url
+    )
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
